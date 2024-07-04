@@ -1,0 +1,82 @@
+name: Update Boost Interprocess
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update-boost:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Fetch all history for all branches and tags
+
+      - name: Install dependencies
+        run: |
+          if dpkg -l | grep -q mssql-tools; then
+            sudo apt-get remove -y mssql-tools
+          fi
+          sudo apt-get update
+          sudo apt-get install -y libboost1.74-tools-dev
+
+      - name: Check for new Boost version
+        id: version_check
+        run: |
+          # Get the latest Boost version
+          LATEST_BOOST_VERSION=$(curl -s https://www.boost.org/users/download/ | grep -o 'Version [0-9]\+\.[0-9]\+\.[0-9]\+' | head -n1 | cut -d' ' -f2)
+          echo "Latest Boost version: $LATEST_BOOST_VERSION"
+
+          # Get the current Boost version from the last commit message
+          CURRENT_BOOST_VERSION="0.0.0"
+          # CURRENT_BOOST_VERSION=$(git log -1 --pretty=%B | grep -o 'Add boost-interprocess [0-9]\+\.[0-9]\+\.[0-9]\+' | cut -d' ' -f3 || echo "0.0.0")
+          echo "Current Boost version: $CURRENT_BOOST_VERSION"
+
+          # Compare versions
+          if [ "$(echo -e "$CURRENT_BOOST_VERSION\n$LATEST_BOOST_VERSION" | sort -V | tail -n1)" = "$LATEST_BOOST_VERSION" ] && [ "$CURRENT_BOOST_VERSION" != "$LATEST_BOOST_VERSION" ]; then
+          echo "update_needed=true" >> $GITHUB_OUTPUT
+          echo "boost_version=$LATEST_BOOST_VERSION" >> $GITHUB_OUTPUT
+          else
+          echo "update_needed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download and extract Boost
+        if: steps.version_check.outputs.update_needed == 'true'
+        run: |
+          BOOST_VERSION=${{ steps.version_check.outputs.boost_version }}
+          BOOST_UNDERSCORED=${BOOST_VERSION//./_}
+          curl -L https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/boost_${BOOST_UNDERSCORED}.tar.gz -o boost.tar.gz
+          tar xzf boost.tar.gz
+
+      - name: Extract Interprocess library
+        if: steps.version_check.outputs.update_needed == 'true'
+        run: |
+          BOOST_VERSION=${{ steps.version_check.outputs.boost_version }}
+          BOOST_UNDERSCORED=${BOOST_VERSION//./_}
+          mkdir -p ./extracted_interprocess
+          bcp --boost=./boost_${BOOST_UNDERSCORED} interprocess ./extracted_interprocess
+
+      - name: Update Interprocess if newer
+        if: steps.version_check.outputs.update_needed == 'true'
+        run: |
+          BOOST_VERSION=${{ steps.version_check.outputs.boost_version }}
+          git checkout -b update-boost-${BOOST_VERSION}
+
+          rm -rf boost
+          mv extracted_interprocess boost
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add boost
+          git commit -m "Add boost-interprocess ${BOOST_VERSION}"
+
+          git push origin update-boost-${BOOST_VERSION}
+
+          echo "New branch 'update-boost-${BOOST_VERSION}' has been created and pushed."
+
+      - name: Create Pull Request
+        if: steps.version_check.outputs.update_needed == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          title: "Update Boost Interprocess to ${{ steps.version_check.outputs.boost_version }}"
+          body: "This PR updates Boost Interprocess to version ${{ steps.version_check.outputs.boost_version }}."
+          branch: "update-boost-${{ steps.version_check.outputs.boost_version }}"
+          base: "master"
